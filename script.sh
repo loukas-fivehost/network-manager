@@ -5,8 +5,8 @@ PORT=3000
 INTERFACE="eth0"
 
 if ! command -v node > /dev/null; then
-  apt update
-  apt install -y nodejs npm
+  curl -fsSL https://deb.nodesource.com/setup_18.x | bash -
+  apt-get install -y nodejs
 fi
 
 mkdir -p "$APP_DIR"
@@ -67,11 +67,13 @@ cat > /etc/systemd/system/$SERVICE_NAME.service << EOF
 [Unit]
 Description=Collecte debit reseau
 After=network.target
+
 [Service]
 ExecStart=/usr/bin/node $APP_DIR/server.js
 Restart=always
 User=nobody
 WorkingDirectory=$APP_DIR
+
 [Install]
 WantedBy=multi-user.target
 EOF
