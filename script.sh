@@ -1,83 +1,78 @@
 #!/bin/bash
-APP_DIR="/opt/debit-collector"
-SERVICE_NAME="debit-collector"
-PORT=3000
-INTERFACE="eth0"
 
-if ! command -v node > /dev/null; then
-  curl -fsSL https://deb.nodesource.com/setup_18.x | bash -
-  apt-get install -y nodejs
-fi
+apt update -y
+apt install -y python3 python3-pip net-tools
 
-mkdir -p "$APP_DIR"
+mkdir -p /opt/traffic-api
+cat > /opt/traffic-api/traffic_api.py << 'EOF'
+from flask import Flask, request, jsonify
+import psutil
+import time
+import sqlite3
+import threading
 
-cat > "$APP_DIR/server.js" << EOF
-const http = require('http');
-const fs = require('fs');
-const INTERFACE = '$INTERFACE';
-const PORT = $PORT;
+app = Flask(__name__)
+DB = '/opt/traffic-api/traffic.db'
 
-let dataPoints = [];
-function readNetDev() {
-  const content = fs.readFileSync('/proc/net/dev', 'utf8');
-  const lines = content.split('\\n');
-  for (const line of lines) {
-    if (line.trim().startsWith(INTERFACE + ':')) {
-      const parts = line.trim().split(/[:\\s]+/);
-      const rx_bytes = parseInt(parts[1]);
-      const tx_bytes = parseInt(parts[9]);
-      return { rx_bytes, tx_bytes };
-    }
-  }
-  throw new Error('Interface not found');
-}
-let lastStats = null;
-function collect() {
-  const now = Date.now();
-  const stats = readNetDev();
-  if (lastStats) {
-    const interval = (now - lastStats.timestamp) / 1000;
-    const rx_rate = (stats.rx_bytes - lastStats.rx_bytes) / interval;
-    const tx_rate = (stats.tx_bytes - lastStats.tx_bytes) / interval;
-    dataPoints.push({ timestamp: now, rx_rate, tx_rate });
-    if (dataPoints.length > 1440) dataPoints.shift();
-  }
-  lastStats = { ...stats, timestamp: now };
-}
-setInterval(collect, 60000);
-collect();
-const server = http.createServer((req, res) => {
-  if (req.url.startsWith('/api/debit')) {
-    const match = req.url.match(/debit=(\\d+)/);
-    let points = 60;
-    if (match) points = Math.min(parseInt(match[1]), 1440);
-    const now = Date.now();
-    const filtered = dataPoints.filter(dp => dp.timestamp >= now - points * 60000);
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify(filtered));
-  } else {
-    res.writeHead(404);
-    res.end('Not found');
-  }
-});
-server.listen(PORT);
+def init_db():
+    conn = sqlite3.connect(DB)
+    c = conn.cursor()
+    c.execute('CREATE TABLE IF NOT EXISTS traffic (timestamp INTEGER, bytes_sent INTEGER, bytes_recv INTEGER)')
+    conn.commit()
+    conn.close()
+
+def collect():
+    prev = psutil.net_io_counters()
+    while True:
+        time.sleep(60)
+        curr = psutil.net_io_counters()
+        sent = curr.bytes_sent - prev.bytes_sent
+        recv = curr.bytes_recv - prev.bytes_recv
+        ts = int(time.time())
+        conn = sqlite3.connect(DB)
+        c = conn.cursor()
+        c.execute('INSERT INTO traffic VALUES (?, ?, ?)', (ts, sent, recv))
+        conn.commit()
+        conn.close()
+        prev = curr
+
+@app.route('/api/debit')
+def api():
+    minutes = int(request.args.get('minutes', 60))
+    now = int(time.time())
+    start = now - (minutes * 60)
+    conn = sqlite3.connect(DB)
+    c = conn.cursor()
+    c.execute('SELECT timestamp, bytes_sent, bytes_recv FROM traffic WHERE timestamp >= ?', (start,))
+    data = c.fetchall()
+    conn.close()
+    return jsonify([
+        {'timestamp': row[0], 'bytes_sent': row[1], 'bytes_recv': row[2]} for row in data
+    ])
+
+if __name__ == '__main__':
+    init_db()
+    threading.Thread(target=collect, daemon=True).start()
+    app.run(host='0.0.0.0', port=5000)
 EOF
 
-cat > /etc/systemd/system/$SERVICE_NAME.service << EOF
+pip3 install flask psutil
+
+cat > /etc/systemd/system/traffic-api.service << EOF
 [Unit]
-Description=Collecte debit reseau
+Description=Traffic API Service
 After=network.target
 
 [Service]
-ExecStart=/usr/bin/node $APP_DIR/server.js
+ExecStart=/usr/bin/python3 /opt/traffic-api/traffic_api.py
 Restart=always
-User=nobody
-WorkingDirectory=$APP_DIR
+User=root
 
 [Install]
 WantedBy=multi-user.target
 EOF
 
+systemctl daemon-reexec
 systemctl daemon-reload
-systemctl enable $SERVICE_NAME
-systemctl start $SERVICE_NAME
+systemctl enable traffic-api
+systemctl start traffic-api
