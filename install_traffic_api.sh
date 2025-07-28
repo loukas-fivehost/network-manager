@@ -3,6 +3,7 @@
 set -e
 
 echo "[1/10] 🔧 Installation des paquets nécessaires..."
+rm -rf /opt/traffic-api/
 apt update -y && apt install -y curl wget git python3 python3-pip python3-venv sqlite3 libnss3-tools
 
 echo "[2/10] 🛠 Téléchargement de mkcert..."
