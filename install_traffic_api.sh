@@ -1,52 +1,79 @@
 #!/bin/bash
 
-set -e
+set -euo pipefail
 
-echo "[0/12] 🛑 Arrêt et suppression de l'ancien service traffic-api (si présent)..."
-if systemctl is-active --quiet traffic-api.service; then
-  systemctl stop traffic-api.service
+# Variables utiles
+INSTALL_DIR="/opt/traffic-api"
+SERVICE_NAME="traffic-api.service"
+
+echo "=== [0] Vérification et arrêt du service $SERVICE_NAME (si existant) ==="
+if systemctl is-active --quiet "$SERVICE_NAME"; then
+  echo "Arrêt du service $SERVICE_NAME..."
+  systemctl stop "$SERVICE_NAME"
+else
+  echo "Service $SERVICE_NAME non actif, pas besoin de l’arrêter."
 fi
-if systemctl is-enabled --quiet traffic-api.service; then
-  systemctl disable traffic-api.service
+
+if systemctl is-enabled --quiet "$SERVICE_NAME"; then
+  echo "Désactivation du service $SERVICE_NAME..."
+  systemctl disable "$SERVICE_NAME"
+else
+  echo "Service $SERVICE_NAME non activé, pas besoin de désactiver."
 fi
 
-echo "[1/12] 🧹 Suppression de l'ancien dossier /opt/traffic-api/ (s'il existe)..."
-if [ -d "/opt/traffic-api" ]; then
-  rm -rf /opt/traffic-api/
+echo "=== [1] Suppression de l’ancien dossier $INSTALL_DIR (s’il existe) ==="
+if [ -d "$INSTALL_DIR" ]; then
+  echo "Suppression du dossier $INSTALL_DIR..."
+  rm -rf "$INSTALL_DIR"
+else
+  echo "Dossier $INSTALL_DIR non existant, rien à supprimer."
 fi
 
-echo "[2/12] 🔧 Installation des paquets nécessaires..."
-apt update -y && apt install -y curl wget git python3 python3-pip python3-venv sqlite3 libnss3-tools
+echo "=== [2] Mise à jour des paquets et installation des dépendances système ==="
+apt update -y
+apt install -y curl wget git python3 python3-pip python3-venv sqlite3 libnss3-tools || {
+  echo "Erreur lors de l'installation des paquets système !" >&2
+  exit 1
+}
 
-echo "[3/12] 🛠 Téléchargement de mkcert..."
+echo "=== [3] Téléchargement et installation de mkcert ==="
 curl -L -o /usr/local/bin/mkcert https://github.com/FiloSottile/mkcert/releases/download/v1.4.4/mkcert-v1.4.4-linux-amd64
 chmod +x /usr/local/bin/mkcert
 
-echo "[4/12] 🧾 Initialisation de mkcert..."
+echo "=== [4] Initialisation mkcert ==="
 mkcert -install
 
-echo "[5/12] 🌐 Récupération de l'IP publique de la machine..."
+echo "=== [5] Détection de l'adresse IP publique de la machine ==="
 IP=$(hostname -I | awk '{print $1}')
+if [[ -z "$IP" ]]; then
+  echo "Impossible de récupérer l'adresse IP publique !" >&2
+  exit 1
+fi
 echo "Adresse IP détectée : $IP"
 
-echo "[6/12] 🔐 Génération du certificat SSL auto-signé pour $IP..."
-mkdir -p /opt/traffic-api/certs
-cd /opt/traffic-api/certs
-mkcert "$IP"
+echo "=== [6] Génération du certificat SSL auto-signé pour l'IP $IP ==="
+mkdir -p "$INSTALL_DIR/certs"
+cd "$INSTALL_DIR/certs"
+mkcert "$IP" || {
+  echo "Erreur lors de la génération du certificat mkcert !" >&2
+  exit 1
+}
 
-CERT="/opt/traffic-api/certs/$IP.pem"
-KEY="/opt/traffic-api/certs/$IP-key.pem"
+CERT="$INSTALL_DIR/certs/$IP.pem"
+KEY="$INSTALL_DIR/certs/$IP-key.pem"
+echo "Certificat généré : $CERT"
+echo "Clé générée : $KEY"
 
-echo "[7/12] 🧱 Création du code API Flask..."
-mkdir -p /opt/traffic-api
-cat <<EOF > /opt/traffic-api/traffic_api.py
+echo "=== [7] Création du code API Flask ==="
+mkdir -p "$INSTALL_DIR"
+cat > "$INSTALL_DIR/traffic_api.py" <<EOF
 from flask import Flask, request, jsonify, render_template_string
 from flask_cors import CORS
 import psutil, time, sqlite3, threading, ssl
 
 app = Flask(__name__)
 CORS(app)
-DB = '/opt/traffic-api/traffic.db'
+DB = '$INSTALL_DIR/traffic.db'
 
 def init_db():
     conn = sqlite3.connect(DB)
@@ -84,7 +111,6 @@ def api():
         {'timestamp': row[0], 'bytes_sent': round(row[1] / 1024 / 1024, 2), 'bytes_recv': round(row[2] / 1024 / 1024, 2)} for row in data
     ])
 
-# Nouvelle route whitelist avec page esthétique
 @app.route('/api/whitelist')
 def whitelist():
     html = """
@@ -150,35 +176,40 @@ if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000, ssl_context=context)
 EOF
 
-echo "[8/12] 🐍 Création de l'environnement virtuel Python..."
-cd /opt/traffic-api
+echo "=== [8] Création et activation de l'environnement virtuel Python ==="
+cd "$INSTALL_DIR"
 python3 -m venv venv
 source venv/bin/activate
-
-echo "[9/12] 📦 Installation des dépendances Python dans l'env virtuel..."
 venv/bin/pip install --upgrade pip
+
+echo "=== [9] Installation des dépendances Python dans l'environnement virtuel ==="
 venv/bin/pip install flask flask-cors psutil
 
-echo "[10/12] 🪪 Création du service systemd..."
-cat <<EOF > /etc/systemd/system/traffic-api.service
+echo "=== [10] Création du service systemd ==="
+cat > /etc/systemd/system/$SERVICE_NAME <<EOF
 [Unit]
 Description=API Flask Traffic Monitor
 After=network.target
 
 [Service]
 User=root
-WorkingDirectory=/opt/traffic-api
-ExecStart=/opt/traffic-api/venv/bin/python /opt/traffic-api/traffic_api.py
+WorkingDirectory=$INSTALL_DIR
+ExecStart=$INSTALL_DIR/venv/bin/python $INSTALL_DIR/traffic_api.py
 Restart=always
 
 [Install]
 WantedBy=multi-user.target
 EOF
 
-echo "[11/12] 🚀 Activation et démarrage du service..."
+echo "=== [11] Rechargement systemd et activation du service ==="
 systemctl daemon-reexec
 systemctl daemon-reload
-systemctl enable traffic-api.service
-systemctl start traffic-api.service
+systemctl enable $SERVICE_NAME
 
-echo "[12/12] ✅ API démarrée sur https://$IP:5000"
+echo "=== [12] Démarrage du service ==="
+systemctl restart $SERVICE_NAME
+
+echo "=== Installation terminée ==="
+echo "L'API Flask est accessible en HTTPS sur https://$IP:5000"
+echo "Vérifiez le statut du service avec : systemctl status $SERVICE_NAME"
+echo "Logs récents : journalctl -u $SERVICE_NAME -n 30"
