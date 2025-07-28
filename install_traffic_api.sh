@@ -2,22 +2,34 @@
 
 set -e
 
-echo "[1/10] 🔧 Installation des paquets nécessaires..."
-rm -rf /opt/traffic-api/
+echo "[0/12] 🛑 Arrêt et suppression de l'ancien service traffic-api (si présent)..."
+if systemctl is-active --quiet traffic-api.service; then
+  systemctl stop traffic-api.service
+fi
+if systemctl is-enabled --quiet traffic-api.service; then
+  systemctl disable traffic-api.service
+fi
+
+echo "[1/12] 🧹 Suppression de l'ancien dossier /opt/traffic-api/ (s'il existe)..."
+if [ -d "/opt/traffic-api" ]; then
+  rm -rf /opt/traffic-api/
+fi
+
+echo "[2/12] 🔧 Installation des paquets nécessaires..."
 apt update -y && apt install -y curl wget git python3 python3-pip python3-venv sqlite3 libnss3-tools
 
-echo "[2/10] 🛠 Téléchargement de mkcert..."
+echo "[3/12] 🛠 Téléchargement de mkcert..."
 curl -L -o /usr/local/bin/mkcert https://github.com/FiloSottile/mkcert/releases/download/v1.4.4/mkcert-v1.4.4-linux-amd64
 chmod +x /usr/local/bin/mkcert
 
-echo "[3/10] 🧾 Initialisation de mkcert..."
+echo "[4/12] 🧾 Initialisation de mkcert..."
 mkcert -install
 
-echo "[4/10] 🌐 Récupération de l'IP publique de la machine..."
+echo "[5/12] 🌐 Récupération de l'IP publique de la machine..."
 IP=$(hostname -I | awk '{print $1}')
 echo "Adresse IP détectée : $IP"
 
-echo "[5/10] 🔐 Génération du certificat SSL auto-signé pour $IP..."
+echo "[6/12] 🔐 Génération du certificat SSL auto-signé pour $IP..."
 mkdir -p /opt/traffic-api/certs
 cd /opt/traffic-api/certs
 mkcert "$IP"
@@ -25,7 +37,7 @@ mkcert "$IP"
 CERT="/opt/traffic-api/certs/$IP.pem"
 KEY="/opt/traffic-api/certs/$IP-key.pem"
 
-echo "[6/10] 🧱 Création du code API Flask..."
+echo "[7/12] 🧱 Création du code API Flask..."
 mkdir -p /opt/traffic-api
 cat <<EOF > /opt/traffic-api/traffic_api.py
 from flask import Flask, request, jsonify, render_template_string
@@ -72,69 +84,63 @@ def api():
         {'timestamp': row[0], 'bytes_sent': round(row[1] / 1024 / 1024, 2), 'bytes_recv': round(row[2] / 1024 / 1024, 2)} for row in data
     ])
 
+# Nouvelle route whitelist avec page esthétique
 @app.route('/api/whitelist')
 def whitelist():
-    html_content = """
+    html = """
     <!DOCTYPE html>
-    <html lang='fr'>
+    <html lang="fr">
     <head>
-        <meta charset='UTF-8' />
-        <meta name='viewport' content='width=device-width, initial-scale=1' />
-        <title>IP Whitelistée</title>
-        <style>
-            body {
-                background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-                font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-                color: white;
-                display: flex;
-                flex-direction: column;
-                justify-content: center;
-                align-items: center;
-                height: 100vh;
-                margin: 0;
-                text-align: center;
-                padding: 20px;
-            }
-            h1 {
-                font-size: 3rem;
-                margin-bottom: 0.5rem;
-            }
-            p {
-                font-size: 1.25rem;
-                margin-bottom: 2rem;
-            }
-            a.button {
-                background: #fff;
-                color: #764ba2;
-                padding: 0.75rem 2rem;
-                border-radius: 30px;
-                text-decoration: none;
-                font-weight: 600;
-                font-size: 1rem;
-                transition: background-color 0.3s ease, color 0.3s ease;
-            }
-            a.button:hover {
-                background: #5a3e85;
-                color: #fff;
-            }
-            @media (max-width: 480px) {
-                h1 {
-                    font-size: 2rem;
-                }
-                p {
-                    font-size: 1rem;
-                }
-            }
-        </style>
+      <meta charset="UTF-8" />
+      <meta name="viewport" content="width=device-width, initial-scale=1" />
+      <title>IP Whitelistée</title>
+      <style>
+        body {
+          background: #0a0a1a;
+          color: #cfd8dc;
+          font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+          display: flex;
+          flex-direction: column;
+          justify-content: center;
+          align-items: center;
+          height: 100vh;
+          margin: 0;
+          text-align: center;
+        }
+        h1 {
+          color: #4caf50;
+          font-size: 2.5rem;
+          margin-bottom: 1rem;
+        }
+        p {
+          font-size: 1.2rem;
+          max-width: 400px;
+          line-height: 1.5;
+        }
+        button {
+          margin-top: 2rem;
+          background-color: #2196f3;
+          border: none;
+          color: white;
+          padding: 0.8rem 1.5rem;
+          font-size: 1rem;
+          border-radius: 8px;
+          cursor: pointer;
+          transition: background-color 0.3s ease;
+        }
+        button:hover {
+          background-color: #1976d2;
+        }
+      </style>
     </head>
     <body>
-        <h1>✅ Votre IP est bien whitelistée !</h1>
-        <p>Vous pouvez fermer cette page et retourner sur le Network Manager.</p>
-        <a href="https://shield.five-host.fr" class="button" target="_blank" rel="noopener noreferrer">Retour au Network Manager</a>
+      <h1>✅ Votre IP est bien Whitelistée</h1>
+      <p>Vous pouvez fermer cette page et retourner sur le Network Manager.</p>
+      <button onclick="window.close()">Fermer la page</button>
     </body>
     </html>
     """
-    return render_template_string(html_content)
+    return render_template_string(html)
 
 if __name__ == '__main__':
     init_db()
@@ -144,16 +150,16 @@ if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000, ssl_context=context)
 EOF
 
-echo "[7/10] 🐍 Création de l'environnement virtuel Python..."
+echo "[8/12] 🐍 Création de l'environnement virtuel Python..."
 cd /opt/traffic-api
 python3 -m venv venv
 source venv/bin/activate
 
-echo "[8/10] 📦 Installation des dépendances Python dans l'env virtuel..."
+echo "[9/12] 📦 Installation des dépendances Python dans l'env virtuel..."
 venv/bin/pip install --upgrade pip
 venv/bin/pip install flask flask-cors psutil
 
-echo "[9/10] 🪪 Création du service systemd..."
+echo "[10/12] 🪪 Création du service systemd..."
 cat <<EOF > /etc/systemd/system/traffic-api.service
 [Unit]
 Description=API Flask Traffic Monitor
@@ -169,10 +175,10 @@ Restart=always
 WantedBy=multi-user.target
 EOF
 
-echo "[10/10] 🚀 Activation et démarrage du service..."
+echo "[11/12] 🚀 Activation et démarrage du service..."
 systemctl daemon-reexec
 systemctl daemon-reload
 systemctl enable traffic-api.service
 systemctl start traffic-api.service
 
-echo "✅ API démarrée sur https://$IP:5000"
+echo "[12/12] ✅ API démarrée sur https://$IP:5000"
