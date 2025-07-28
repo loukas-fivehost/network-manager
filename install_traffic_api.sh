@@ -27,7 +27,7 @@ KEY="/opt/traffic-api/certs/$IP-key.pem"
 echo "[6/10] 🧱 Création du code API Flask..."
 mkdir -p /opt/traffic-api
 cat <<EOF > /opt/traffic-api/traffic_api.py
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, render_template_string
 from flask_cors import CORS
 import psutil, time, sqlite3, threading, ssl
 
@@ -70,6 +70,70 @@ def api():
     return jsonify([
         {'timestamp': row[0], 'bytes_sent': round(row[1] / 1024 / 1024, 2), 'bytes_recv': round(row[2] / 1024 / 1024, 2)} for row in data
     ])
+
+@app.route('/api/whitelist')
+def whitelist():
+    html_content = """
+    <!DOCTYPE html>
+    <html lang='fr'>
+    <head>
+        <meta charset='UTF-8' />
+        <meta name='viewport' content='width=device-width, initial-scale=1' />
+        <title>IP Whitelistée</title>
+        <style>
+            body {
+                background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+                color: white;
+                display: flex;
+                flex-direction: column;
+                justify-content: center;
+                align-items: center;
+                height: 100vh;
+                margin: 0;
+                text-align: center;
+                padding: 20px;
+            }
+            h1 {
+                font-size: 3rem;
+                margin-bottom: 0.5rem;
+            }
+            p {
+                font-size: 1.25rem;
+                margin-bottom: 2rem;
+            }
+            a.button {
+                background: #fff;
+                color: #764ba2;
+                padding: 0.75rem 2rem;
+                border-radius: 30px;
+                text-decoration: none;
+                font-weight: 600;
+                font-size: 1rem;
+                transition: background-color 0.3s ease, color 0.3s ease;
+            }
+            a.button:hover {
+                background: #5a3e85;
+                color: #fff;
+            }
+            @media (max-width: 480px) {
+                h1 {
+                    font-size: 2rem;
+                }
+                p {
+                    font-size: 1rem;
+                }
+            }
+        </style>
+    </head>
+    <body>
+        <h1>✅ Votre IP est bien whitelistée !</h1>
+        <p>Vous pouvez fermer cette page et retourner sur le Network Manager.</p>
+        <a href="https://shield.five-host.fr" class="button" target="_blank" rel="noopener noreferrer">Retour au Network Manager</a>
+    </body>
+    </html>
+    """
+    return render_template_string(html_content)
 
 if __name__ == '__main__':
     init_db()
